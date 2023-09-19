@@ -105,19 +105,22 @@ def verify_zk(
 def zk_circuit(private: PrivateInput, public: PublicInput):
     """
     template Example () {
+        // private signal
         signal input sub;
+
+        // public signal
         signal input header, masked_decoded_payload, msg_hash, sub_hash;
         signal output out;
 
         // 1. check sub_hash
-        // assert hash(sub) == sub_hash
+        // assert hash(sub) == sub_hash // any hash is ok (e.g., Poseidon Poseidon)
 
         // 2. check msg_hash
-        // id_token = masked_id_token.copy()
-        // find "sub" field in id_token, and replace
+        // id_token = masked_decoded_payload.copy()
+        // find masked "sub" field in id_token, and replace it with real sub
         // payload = base64urlencode(id_token)
         // msg = concat(header, ".", payload)
-        // assert hash(msg) == msg_hash
+        // assert sha256(msg) == msg_hash
     }
     """
     assert SHA256.new(private["sub"]).digest() == public["sub_hash"].digest()
