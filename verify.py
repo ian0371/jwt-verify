@@ -1,5 +1,5 @@
-import jwt, re, time
-from typing import TypedDict
+import json, jwt, re, time
+from typing import TypedDict, OrderedDict
 from Crypto.Hash import SHA256
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from Crypto.PublicKey import RSA
@@ -20,15 +20,19 @@ class PrivateInput(TypedDict):
 class PublicInput(TypedDict):
     header: bytes
     masked_decoded_payload: bytes
-    msg_hash: bytes
-    sub_hash: bytes
+    msg_hash: SHA256.SHA256Hash
+    sub_hash: SHA256.SHA256Hash
 
 
-def mask_id_token(id_token: dict, mask_fields) -> dict:
-    ret = id_token.copy()
+def mask_jwt_token(jwt_token: str, mask_fields) -> str:
+    header, payload, sig = jwt_token.split(".")
+    id_token = b64decode(payload)
+    masked_id_token = id_token
     for field in mask_fields:
-        ret[field] = "*" * MASK_FIELD_LENGTH
-    return ret
+        pat = '"{}":".+?",'.format(field).encode()
+        replace = '"{}":"{}",'.format(field, "*" * MASK_FIELD_LENGTH).encode()
+        masked_id_token = re.sub(pat, replace, id_token)
+    return header + "." + urlsafe_b64encode(masked_id_token).decode() + "." + sig
 
 
 def b64decode(s: str) -> bytes:
@@ -48,6 +52,10 @@ def b64decode(s: str) -> bytes:
 #     assert id_token["iat"] < time.time() < id_token["exp"]
 
 
+def verify_sig(hash: SHA256.SHA256Hash, sig: bytes):
+    pkcs1_15.new(PUBLIC_KEY).verify(hash, sig)
+
+
 def verify_payload(payload, userOpHash):
     id_token = eval(b64decode(payload))
     assert id_token["nonce"] == userOpHash
@@ -57,51 +65,55 @@ def verify_payload(payload, userOpHash):
 
 
 def verify_nonzk(jwt_token: str, userOpHash: str):
+    # check sig: raises error on fail
     h = calc_msg_hash(jwt_token)
     _, payload, signature = jwt_token.split(".")
-    sig = b64decode(signature)
-
-    # check sig: raises error on fail
-    pkcs1_15.new(PUBLIC_KEY).verify(h, sig)
+    verify_sig(h, b64decode(signature))
 
     # check id_token
     verify_payload(payload, userOpHash)
 
 
 def verify_zk(
-    masked_jwt_token: str, private: PrivateInput, public: PublicInput, userOpHash: str
+    jwt_masked_token: str,
+    private: PrivateInput,
+    public: PublicInput,
+    userOpHash: str,
 ):
     print("* ZK private input", private)
     print("* ZK public input", public)
-    # check sig: raises error on fail
+
+    _, masked_payload, signature = jwt_masked_token.split(".")
+
+    # check if sender knows "sub"
     zk_circuit(private, public)
 
+    # check sig: raises error on fail
+    verify_sig(public["msg_hash"], b64decode(signature))
+
     # check id_token
-    _, masked_payload, _ = masked_jwt_token.split(".")
     verify_payload(masked_payload, userOpHash)
 
 
-"""
-template Example () {
-    signal input sub;
-    signal input header, masked_id_token, msg_hash, sub_hash;
-    signal output out;
-    
-    // 1. check sub_hash
-    // assert hash(sub) == sub_hash
-
-    // 2. check msg_hash
-    // id_token = masked_id_token.copy()
-    // find "sub" field in id_token, and replace
-    // payload = base64urlencode(id_token)
-    // msg = concat(header, ".", payload)
-    // assert hash(msg) == msg_hash
-}
-"""
-
-
 def zk_circuit(private: PrivateInput, public: PublicInput):
-    assert SHA256.new(private["sub"]).digest() == public["sub_hash"]
+    """
+    template Example () {
+        signal input sub;
+        signal input header, masked_id_token, msg_hash, sub_hash;
+        signal output out;
+
+        // 1. check sub_hash
+        // assert hash(sub) == sub_hash
+
+        // 2. check msg_hash
+        // id_token = masked_id_token.copy()
+        // find "sub" field in id_token, and replace
+        // payload = base64urlencode(id_token)
+        // msg = concat(header, ".", payload)
+        // assert hash(msg) == msg_hash
+    }
+    """
+    assert SHA256.new(private["sub"]).digest() == public["sub_hash"].digest()
 
     id_token = public["masked_decoded_payload"][:]
     target_idx = id_token.find(b"*" * MASK_FIELD_LENGTH)
@@ -112,16 +124,16 @@ def zk_circuit(private: PrivateInput, public: PublicInput):
     )
     payload = urlsafe_b64encode(id_token)
     msg = public["header"] + b"." + payload
-    assert SHA256.new(msg).digest() == public["msg_hash"]
+    assert SHA256.new(msg).digest() == public["msg_hash"].digest()
 
 
-def calc_msg_hash(jwt_token: str):
+def calc_msg_hash(jwt_token: str) -> SHA256.SHA256Hash:
     header, payload, _ = jwt_token.split(".")
     msg = header.encode() + b"." + payload.encode()
     return SHA256.new(msg)
 
 
-def calc_sub_hash(jwt_token: str):
+def calc_sub_hash(jwt_token: str) -> SHA256.SHA256Hash:
     _, payload, _ = jwt_token.split(".")
     decoded_payload = eval(b64decode(payload))
     return SHA256.new(decoded_payload["sub"].encode())
@@ -133,17 +145,15 @@ def main():
     verify_nonzk(jwt_token, USER_OP_HASH)
     print("verify_nonzk: Pass")
 
-    masked_id_token = mask_id_token(id_token, ["sub"])
-    masked_jwt_token = jwt.encode(masked_id_token, key.export_key(), algorithm="RS256")
-
+    masked_jwt_token = mask_jwt_token(jwt_token, ["sub"])
     verify_zk(
         masked_jwt_token,
         {"sub": id_token["sub"].encode()},
         {
             "header": jwt_token.split(".")[0].encode(),
             "masked_decoded_payload": b64decode(masked_jwt_token.split(".")[1]),
-            "msg_hash": calc_msg_hash(jwt_token).digest(),
-            "sub_hash": calc_sub_hash(jwt_token).digest(),
+            "msg_hash": calc_msg_hash(jwt_token),
+            "sub_hash": calc_sub_hash(jwt_token),
         },
         USER_OP_HASH,
     )
