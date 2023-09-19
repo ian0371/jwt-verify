@@ -7,7 +7,7 @@ from Crypto.Signature import pkcs1_15
 
 ISSUER = "http://server.example.com"
 AUD = "s6BhdRkqt3"
-key = RSA.generate(2048)
+key = RSA.import_key(open("test_key.pem").read())
 PUBLIC_KEY = key.publickey()
 USER_OP_HASH = "0x8d9abb9b140bd3c63db2ce7ee3171ab1c2284fd905ad13156df1069a1918b2b3"
 MASK_FIELD_LENGTH = 8
@@ -80,8 +80,15 @@ def verify_zk(
     public: PublicInput,
     userOpHash: str,
 ):
-    print("* ZK private input", private)
-    print("* ZK public input", public)
+    print("*********************************************************")
+    print("* ZK private input")
+    print("  * sub:", private["sub"].decode())
+    print("* ZK public input")
+    print("  * header:", public["header"].decode())
+    print("  * masked_decoded_payload:", public["masked_decoded_payload"].decode())
+    print("  * msg_hash:", public["msg_hash"].hexdigest())
+    print("  * sub_hash:", public["sub_hash"].hexdigest())
+    print("*********************************************************")
 
     _, masked_payload, signature = jwt_masked_token.split(".")
 
@@ -99,7 +106,7 @@ def zk_circuit(private: PrivateInput, public: PublicInput):
     """
     template Example () {
         signal input sub;
-        signal input header, masked_id_token, msg_hash, sub_hash;
+        signal input header, masked_decoded_payload, msg_hash, sub_hash;
         signal output out;
 
         // 1. check sub_hash
@@ -142,10 +149,19 @@ def calc_sub_hash(jwt_token: str) -> SHA256.SHA256Hash:
 def main():
     id_token = eval(open("id_token.json").read())
     jwt_token = jwt.encode(id_token, key.export_key(), algorithm="RS256")
-    verify_nonzk(jwt_token, USER_OP_HASH)
-    print("verify_nonzk: Pass")
+    # verify_nonzk(jwt_token, USER_OP_HASH)
+    # print("verify_nonzk: Pass")
 
     masked_jwt_token = mask_jwt_token(jwt_token, ["sub"])
+    print("* JWT token decoded")
+    print("  * header:", b64decode(jwt_token.split(".")[0]).decode())
+    print("  * payload:", b64decode(jwt_token.split(".")[1]).decode())
+    print("  * signature:", b64decode(jwt_token.split(".")[2]))
+    print("* Masked JWT token decoded")
+    print("  * header:", b64decode(masked_jwt_token.split(".")[0]).decode())
+    print("  * masked payload:", b64decode(masked_jwt_token.split(".")[1]).decode())
+    print("  * signature:", b64decode(masked_jwt_token.split(".")[2]))
+
     verify_zk(
         masked_jwt_token,
         {"sub": id_token["sub"].encode()},
